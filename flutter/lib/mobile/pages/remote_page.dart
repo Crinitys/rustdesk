@@ -335,32 +335,51 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       // clipboard
       oldValue = '';
     }
-    if (newValue.length == oldValue.length) {
-      // ?
-    } else if (newValue.length < oldValue.length) {
-      final char = 'VK_BACK';
-      inputModel.inputKey(char);
-    } else {
-      final content = newValue.substring(oldValue.length);
-      if (content.length > 1) {
-        if (oldValue != '' &&
-            content.length == 2 &&
-            (content == '""' ||
-                content == '()' ||
-                content == '[]' ||
-                content == '<>' ||
-                content == "{}" ||
-                content == '”“' ||
-                content == '《》' ||
-                content == '（）' ||
-                content == '【】')) {
-          // can not only input content[0], because when input ], [ are also auo insert, which cause ] never be input
-          bind.sessionInputString(sessionId: sessionId, value: content);
-          _openKeyboardUnlocked();
-          return;
-        }
+    // Diff by common prefix instead of assuming a pure trailing append.
+    // Android IMEs (autocorrect, predictive composing, Korean/CJK jamo
+    // combination) often replace part of the already-sent text, not just
+    // append to it; treating that as a pure append leaked stale `initText`
+    // ('1') padding as typed content, and same-length replacements (Korean
+    // jamo combining into a syllable block) were silently dropped.
+    var common = 0;
+    final maxCommon =
+        oldValue.length < newValue.length ? oldValue.length : newValue.length;
+    while (common < maxCommon && oldValue[common] == newValue[common]) {
+      common++;
+    }
+    final removed = oldValue.length - common;
+    final content = newValue.substring(common);
+    if (removed == 0 && content.isEmpty) {
+      // no real change (e.g. cursor moved only)
+      return;
+    }
+    if (content.length > 1) {
+      if (oldValue != '' &&
+          removed == 0 &&
+          content.length == 2 &&
+          (content == '""' ||
+              content == '()' ||
+              content == '[]' ||
+              content == '<>' ||
+              content == "{}" ||
+              content == '”“' ||
+              content == '《》' ||
+              content == '（）' ||
+              content == '【】')) {
+        // can not only input content[0], because when input ], [ are also auo insert, which cause ] never be input
         bind.sessionInputString(sessionId: sessionId, value: content);
-      } else {
+        _openKeyboardUnlocked();
+        return;
+      }
+      for (var i = 0; i < removed; i++) {
+        inputModel.inputKey('VK_BACK');
+      }
+      bind.sessionInputString(sessionId: sessionId, value: content);
+    } else {
+      for (var i = 0; i < removed; i++) {
+        inputModel.inputKey('VK_BACK');
+      }
+      if (content.isNotEmpty) {
         inputChar(content);
       }
     }
