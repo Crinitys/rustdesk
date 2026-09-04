@@ -9,6 +9,7 @@ void main() {
   final originalPlatformSupported = ClientKeepAliveManager.platformSupported;
 
   setUp(() {
+    ClientKeepAliveManager.resetForTest();
     ClientKeepAliveManager.platformSupported = true;
     ClientKeepAliveManager.onFirstEverEnable = () async {};
   });
