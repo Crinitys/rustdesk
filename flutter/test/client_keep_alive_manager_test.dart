@@ -53,7 +53,8 @@ void main() {
     expect(stopCalls, 1);
   });
 
-  test('calls onFirstEverEnable exactly once even across two separate sessions',
+  test(
+      'calls onFirstEverEnable on every 0-to-1 transition (once-ever gating lives in the real implementation, not tested here)',
       () {
     ClientKeepAliveManager.startPlatformService = () async {};
     ClientKeepAliveManager.stopPlatformService = () async {};
