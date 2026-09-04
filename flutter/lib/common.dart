@@ -2837,6 +2837,11 @@ class ClientKeepAliveManager {
     if (_enabledKeys.isNotEmpty) return;
     stopPlatformService();
   }
+
+  /// Test seam: resets internal state for test isolation between test cases.
+  /// Production code never calls this.
+  @visibleForTesting
+  static void resetForTest() => _enabledKeys.clear();
 }
 
 /// call this to reload current window.
