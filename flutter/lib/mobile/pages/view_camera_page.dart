@@ -100,6 +100,7 @@ class _ViewCameraPageState extends State<ViewCameraPage>
           .showLoading(translate('Connecting...'), onCancel: closeConnection);
     });
     WakelockManager.enable(_uniqueKey);
+    ClientKeepAliveManager.enable(_uniqueKey);
     _physicalFocusNode.requestFocus();
     gFFI.inputModel.listenToMouse(true);
     gFFI.qualityMonitorModel.checkShowQualityMonitor(sessionId);
@@ -137,6 +138,7 @@ class _ViewCameraPageState extends State<ViewCameraPage>
     await SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual,
         overlays: SystemUiOverlay.values);
     WakelockManager.disable(_uniqueKey);
+    ClientKeepAliveManager.disable(_uniqueKey);
     removeSharedStates(widget.id);
     // `on_voice_call_closed` should be called when the connection is ended.
     // The inner logic of `on_voice_call_closed` will check if the voice call is active.
