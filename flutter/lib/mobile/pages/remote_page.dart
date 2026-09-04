@@ -106,6 +106,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
           .showLoading(translate('Connecting...'), onCancel: closeConnection);
     });
     WakelockManager.enable(_uniqueKey);
+    ClientKeepAliveManager.enable(_uniqueKey);
     _physicalFocusNode.requestFocus();
     gFFI.inputModel.listenToMouse(true);
     gFFI.qualityMonitorModel.checkShowQualityMonitor(sessionId);
@@ -170,6 +171,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     await SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual,
         overlays: SystemUiOverlay.values);
     WakelockManager.disable(_uniqueKey);
+    ClientKeepAliveManager.disable(_uniqueKey);
     await keyboardSubscription.cancel();
     removeSharedStates(widget.id);
     // `on_voice_call_closed` should be called when the connection is ended.
