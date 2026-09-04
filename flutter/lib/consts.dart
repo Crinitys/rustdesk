@@ -216,6 +216,8 @@ const String kOptionKeepScreenOn = "keep-screen-on";
 
 const String kOptionKeepAwakeDuringIncomingSessions = "keep-awake-during-incoming-sessions";
 const String kOptionKeepAwakeDuringOutgoingSessions = "keep-awake-during-outgoing-sessions";
+const String kOptionAndroidKeepAliveBatteryPromptShown =
+    "android-keep-alive-battery-prompt-shown";
 
 const String kOptionShowMobileAction = "showMobileActions";
 
