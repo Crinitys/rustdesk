@@ -28,6 +28,8 @@ on:
 jobs:
   run-ci:
     uses: ./.github/workflows/flutter-build.yml
+    permissions:
+      contents: write
     with:
       upload-artifact: ${{ inputs.platform == 'android' }}
       platform: ${{ inputs.platform || 'all' }}
