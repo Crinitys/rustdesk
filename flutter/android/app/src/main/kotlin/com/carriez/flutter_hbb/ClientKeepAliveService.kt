@@ -17,7 +17,7 @@ import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 
-const val CLIENT_KEEP_ALIVE_NOTIFY_ID = 300
+const val CLIENT_KEEP_ALIVE_NOTIFY_ID = 1000
 const val CLIENT_KEEP_ALIVE_CHANNEL_ID = "RustDeskClientKeepAlive"
 
 /**
@@ -36,10 +36,16 @@ class ClientKeepAliveService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForegroundNotification()
         acquireWakeLock()
-        return START_STICKY
+        return START_NOT_STICKY
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        stopSelf()
     }
 
     override fun onDestroy() {
+        stopForeground(STOP_FOREGROUND_REMOVE)
         releaseWakeLock()
         super.onDestroy()
     }
