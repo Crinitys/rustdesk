@@ -2,6 +2,14 @@ name: Full Flutter CI
 
 on:
   workflow_dispatch:
+    inputs:
+      platform:
+        description: "Platform to build (local testing only, not for upstream CI)"
+        type: choice
+        default: all
+        options:
+          - all
+          - android
   pull_request:
     paths-ignore:
     - "docs/**"
@@ -21,4 +29,5 @@ jobs:
   run-ci:
     uses: ./.github/workflows/flutter-build.yml
     with:
-      upload-artifact: false
+      upload-artifact: ${{ inputs.platform == 'android' }}
+      platform: ${{ inputs.platform || 'all' }}
