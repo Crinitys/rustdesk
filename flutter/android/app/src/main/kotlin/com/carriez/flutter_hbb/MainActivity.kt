@@ -647,6 +647,34 @@ class MainActivity : FlutterActivity() {
                 "on_voice_call_closed" -> {
                     onVoiceCallClosed()
                 }
+                "start_client_keep_alive" -> {
+                    Intent(activity, ClientKeepAliveService::class.java).also {
+                        androidx.core.content.ContextCompat.startForegroundService(activity, it)
+                    }
+                    result.success(true)
+                }
+                "stop_client_keep_alive" -> {
+                    activity.stopService(Intent(activity, ClientKeepAliveService::class.java))
+                    result.success(true)
+                }
+                "request_ignore_battery_optimizations" -> {
+                    val powerManager =
+                        context.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
+                        !powerManager.isIgnoringBatteryOptimizations(context.packageName)
+                    ) {
+                        try {
+                            val intent = Intent(
+                                android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                                Uri.parse("package:${context.packageName}")
+                            )
+                            activity.startActivity(intent)
+                        } catch (e: Exception) {
+                            Log.e(logTag, "Failed to request battery optimization exemption", e)
+                        }
+                    }
+                    result.success(true)
+                }
                 else -> {
                     result.error("-1", "No such method", null)
                 }
