@@ -2,31 +2,29 @@
 """Build the Android (arm64) APK of this fork locally, on a Windows host.
 
 CI builds on Ubuntu; this reproduces it here so a Dart-only change does not need
-a 45-minute round trip. It assumes nothing but a freshly installed Windows: the
-`install` phase puts every missing tool on the machine, and every phase is
-idempotent, so re-running is cheap.
+a 45-minute round trip. Every tool it runs comes from the build partition, which
+resolves `use_tool.json` beside this file against its own `tools.json`; nothing
+is installed on the machine and nothing is taken from the system PATH.
 
 Phases, in order:
 
-  1. install   put the required programs and libraries on the machine
-  2. verify    check what is installed: versions, paths, presence
-  3. env       assemble the build environment and smoke-test it
-  4. prebuild  native dependencies, generated bindings, librustdesk.so
-  5. build     the Flutter app, packaged and signed
-  6. cleanup   drop intermediates, restore the files the build patched
+  1. tools     check the partition's tools, add what only this build needs
+  2. env       assemble the build environment and smoke-test it
+  3. prebuild  native dependencies, generated bindings, librustdesk.so
+  4. build     the Flutter app, packaged and signed
+  5. cleanup   drop intermediates, restore the files the build patched
 
 Usage:
 
-    python build_android_local.py                     # all phases
-    python build_android_local.py --list              # show phases
-    python build_android_local.py --only build        # rerun one phase
-    python build_android_local.py --start-at prebuild # resume from a phase
-    python build_android_local.py --force             # ignore "already done"
-    python build_android_local.py --install-apk       # adb install at the end
-    python build_android_local.py --keep-patches      # skip the restore
+    python build-local/build.py                     # all phases
+    python build-local/build.py --list              # show phases
+    python build-local/build.py --only build        # rerun one phase
+    python build-local/build.py --start-at prebuild # resume from a phase
+    python build-local/build.py --force             # ignore "already done"
+    python build-local/build.py --install-apk       # adb install at the end
+    python build-local/build.py --keep-patches      # skip the restore
 
-RUSTDESK_TOOLCHAINS points the toolchains at a shared drive; RUSTDESK_BUILDENV
-moves this project's own caches, sources and output.
+RUSTDESK_TOOLS_ROOT points at the build partition when it is not E:/.
 """
 
 import argparse
@@ -35,117 +33,107 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import urllib.request
 import zipfile
 from pathlib import Path
 
 # --------------------------------------------------------------------------- config
 
-REPO = Path(__file__).resolve().parent
+REPO = Path(__file__).resolve().parent.parent
+BUILD_LOCAL = Path(__file__).resolve().parent
 FLUTTER_DIR = REPO / "flutter"
 
-# Everything this build downloads, compiles or stages lives under one directory
-# outside the repo, so none of it leaks into the rest of the machine and it can
-# be deleted in one go. Override with RUSTDESK_BUILDENV.
-BUILDENV = Path(os.environ.get("RUSTDESK_BUILDENV", REPO.parent / "rustdesk-buildenv"))
-# The toolchains are separately addressable so they can live on a shared drive
-# while this project's own state stays next to the checkout. Nothing is symlinked
-# into place: every tool here is found through an environment variable, which
-# leaves the machine's own installations alone and keeps it obvious what a build
-# actually uses.
-TOOLCHAINS = Path(os.environ.get("RUSTDESK_TOOLCHAINS", BUILDENV / "toolchains"))
-DOWNLOADS = BUILDENV / "caches/downloads"
-PERLLIB = BUILDENV / "perllib"
-OUT_DIR = BUILDENV / "out"
-# A rustup installation of this build's own, so the shared ~/.rustup and
-# ~/.cargo -- which other projects here rely on, including a custom OLLVM
-# toolchain -- are never touched. cargo-ndk and flutter_rust_bridge_codegen live
-# in it too, since nothing else uses them.
-RUSTUP_HOME = TOOLCHAINS / "rustup"
-CARGO_HOME = TOOLCHAINS / "cargo"
-RUSTUP_INIT_URL = "https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe"
+# The build partition. Its build_env.py turns a tool name and version into a
+# directory, so this script never hard-codes where a toolchain lives, and two
+# repositories can pin different versions of the same tool.
+TOOLS_ROOT = Path(os.environ.get("RUSTDESK_TOOLS_ROOT", "E:/"))
+sys.path.insert(0, str(TOOLS_ROOT))
+try:
+    from build_env import CACHE_ROOT, read_use_tool, resolve
+    from build_pre import NotReady, prepare
+except ImportError as exc:
+    raise SystemExit(f"ERROR: no build partition at {TOOLS_ROOT} ({exc})\n"
+                     "  Point RUSTDESK_TOOLS_ROOT at the directory holding build_env.py.")
+
+USE_TOOL = BUILD_LOCAL / "use_tool.json"
+WANTED = read_use_tool(USE_TOOL)
+
+
+def tool(name):
+    return resolve(name, WANTED.get(name))
+
+
+# Everything this build stages, patches or produces. All of it is ignored by
+# git, and deleting this directory costs only the time to rebuild.
+DOWNLOADS = BUILD_LOCAL / "cache/downloads"
+GRADLE_HOME = BUILD_LOCAL / "cache/gradle"
+STRAWBERRY_DIR = BUILD_LOCAL / "cache/strawberry"
+PERLLIB = BUILD_LOCAL / "perllib"
+OUT_DIR = BUILD_LOCAL / "out"
+HWCODEC_DIR = BUILD_LOCAL / "sources/hwcodec"
+LIBSODIUM_SYS_DIR = BUILD_LOCAL / "sources/libsodium-sys"
+MANIFEST = BUILD_LOCAL / "patched-files.json"
+
+GIT_DIR = tool("git").dir
+JDK_DIR = tool("jdk").dir
+ANDROID_SDK = tool("android-sdk").dir
+LLVM_DIR = tool("llvm").dir
+MINGW_DIR = tool("mingw").dir
+FLUTTER_SDK = tool("flutter").dir
+VCPKG_ROOT = tool("vcpkg").dir
+CARGO_HOME = tool("cargo").dir
+RUSTUP_HOME = tool("rustup").dir
+SODIUM_DIR = tool("sodium").dir
+NDK = tool("ndk").dir
+
+FLUTTER_VERSION = tool("flutter").version
+NDK_VERSION = tool("ndk").version
 
 ABI = "arm64-v8a"
-NDK_VERSION = "28.2.13676358"  # r28c, the version the CI builds with
 RUST_TARGET = "aarch64-linux-android"
 VCPKG_TRIPLET = "arm64-android"
 
 # The host side is GNU, not MSVC, so a bare machine needs no Visual Studio: the
-# MinGW toolchain ships in the build env, while MSVC cannot legally be
+# MinGW toolchain comes from the partition, while MSVC cannot legally be
 # redistributed. It also supplies the cmake/ninja/nasm fallback for vcpkg.
 HOST_RUST_TARGET = "x86_64-pc-windows-gnu"
 HOST_VCPKG_TRIPLET = "x64-mingw-static"
-MINGW_DIR = TOOLCHAINS / "mingw"
 
 # The ports the Android build actually consumes. Installing them explicitly, in
 # classic mode, avoids the manifest's `host: true` entries, which would build a
 # second copy of everything for the host.
 VCPKG_PORTS = ["aom", "cpu-features", "libjpeg-turbo", "opus", "libvpx", "libyuv", "ffmpeg"]
 
-# Pinned to what the Android CI uses. Newer Flutter (3.44) drops the v1 plugin
-# embedding that the pinned file_picker / flutter_plugin_android_lifecycle still
-# rely on, and its migrator rewrites tracked gradle files behind your back.
-FLUTTER_VERSION = "3.24.5"
-FLUTTER_ZIP_URL = ("https://storage.googleapis.com/flutter_infra_release/releases/stable/"
-                   f"windows/flutter_windows_{FLUTTER_VERSION}-stable.zip")
-FLUTTER_SDK = TOOLCHAINS / "flutter"
-
-VCPKG_ROOT = Path(os.environ.get("VCPKG_ROOT", TOOLCHAINS / "vcpkg"))
-VCPKG_COMMIT = "9e593bb18ea69cc5095e012465dcd675a822ed0d"
-
 FRB_VERSION = "1.80.1"  # must match `flutter_rust_bridge` in flutter/pubspec.yaml
 HWCODEC_URL = "https://github.com/rustdesk-org/hwcodec"
 HWCODEC_REV = "778df1f99597722473b29443bac22ae6c23946fe"
-HWCODEC_DIR = BUILDENV / "sources/hwcodec"
 LIBSODIUM_SYS_VERSION = "0.2.7"
-LIBSODIUM_SYS_DIR = BUILDENV / "sources/libsodium-sys"
 
-# Default to rustup's own toolchain. The in-repo stage1 compiler is built against
-# an OLLVM fork and the librustdesk.so it produces crashes the app on launch
-# (confirmed by swapping only that .so into an otherwise identical APK).
-# Set RUSTDESK_RUST_TOOLCHAIN=<name> to opt into a linked custom toolchain.
+# Default to rustup's own toolchain. The custom stage1 compiler on the partition
+# is built against an OLLVM fork and the librustdesk.so it produces crashes the
+# app on launch (confirmed by swapping only that .so into an otherwise identical
+# APK). Set RUSTDESK_RUST_TOOLCHAIN=<name> to opt into a linked custom toolchain.
 RUST_TOOLCHAIN = os.environ.get("RUSTDESK_RUST_TOOLCHAIN") or None
 
-# Portable copies of tools other projects on this machine also use, so this
-# directory can be zipped and unpacked on a bare PC. They are copies, never
-# moves: the system installations stay where the other projects expect them.
-GIT_DIR = TOOLCHAINS / "git"
-GIT_URL_API = "https://api.github.com/repos/git-for-windows/git/releases/latest"
-GIT_ASSET = "PortableGit-*-64-bit.7z.exe"
-
-JDK_DIR = TOOLCHAINS / "jdk"
-JDK_URL_API = "https://api.github.com/repos/adoptium/temurin17-binaries/releases/latest"
-JDK_ASSET = "OpenJDK17U-jdk_x64_windows_hotspot_*.zip"
-
-ANDROID_SDK = TOOLCHAINS / "android-sdk"
 BUILD_TOOLS_VERSION = "37.0.0"
 ANDROID_PLATFORM = "android-36"  # matches compileSdkVersion in flutter/android/app/build.gradle
 
 GIT_USR_BIN = GIT_DIR / "usr/bin"
-# LLVM is here only so ffigen/bindgen have a libclang.dll; the Android SDK ships
-# libclang_android.dll, which they cannot load. Kept inside the build env rather
-# than installed system-wide, where its clang would shadow other projects'.
-LLVM_VERSION = "22.1.8"
-LLVM_DIR = TOOLCHAINS / "llvm"
-LLVM_URL = (f"https://github.com/llvm/llvm-project/releases/download/llvmorg-{LLVM_VERSION}"
-            f"/clang+llvm-{LLVM_VERSION}-x86_64-pc-windows-msvc.tar.xz")
 
 # Strawberry Perl is never executed; it is only a source of the pure-perl modules
-# Git's cut-down perl lacks. The portable zip avoids an installer that would put
-# its gcc/make/ld on the system PATH, where other projects would pick them up.
+# Git's cut-down perl lacks, and only until perllib is staged. The portable zip
+# avoids an installer that would put its gcc/make/ld on the system PATH.
 STRAWBERRY_VERSION = "5.40.2.1"
-STRAWBERRY_DIR = TOOLCHAINS / "strawberry"
 STRAWBERRY_URL = (f"https://strawberryperl.com/download/{STRAWBERRY_VERSION}"
                   f"/strawberry-perl-{STRAWBERRY_VERSION}-64bit-portable.zip")
 
-# A symlink, so the signing key itself stays outside and never travels in a zip
-# of this directory.
+# A symlink, so the signing key itself stays outside the repository.
 KEYSTORE = Path(os.environ.get("RUSTDESK_KEYSTORE",
-                               BUILDENV / "keys/rustdesk-personal.keystore"))
+                               BUILD_LOCAL / "keys/rustdesk-personal.keystore"))
 KEY_ALIAS = os.environ.get("RUSTDESK_KEY_ALIAS", "rustdesk-personal")
 KEY_PASS = os.environ.get("RUSTDESK_KEY_PASS", "rustdesk123")
 
-SODIUM_DIR = BUILDENV / "libs/sodium"
 OUT_APK = OUT_DIR / f"rustdesk-{ABI}-signed.apk"
 ALIGNED_APK = OUT_DIR / f"rustdesk-{ABI}-aligned.apk"
 
@@ -158,6 +146,11 @@ PERL_MODULES = {
     "Getopt::Long": "Getopt",
     "Locale::Maketext::Simple": "Locale",
 }
+
+NDK_LLVM = NDK / "toolchains/llvm/prebuilt/windows-x86_64"
+NDK_BIN = NDK_LLVM / "bin"
+NDK_MAKE_BIN = NDK / "prebuilt/windows-x86_64/bin"
+NDK_SYSROOT_LIB = NDK_LLVM / "sysroot/usr/lib" / RUST_TARGET
 
 # --------------------------------------------------------------------------- helpers
 
@@ -175,29 +168,29 @@ def fail(msg):
 
 
 def check_relocation():
-    """Drop the caches that bake in absolute paths when this directory has moved.
+    """Drop the caches that bake in absolute paths when the partition has moved.
 
     Gradle's transform cache and Flutter's local.properties both record where the
-    build env was, and a stale entry fails in ways that do not name the cause.
+    toolchains were, and a stale entry fails in ways that do not name the cause.
     Everything else here is relocatable, and cargo simply rebuilds.
     """
-    stamp = BUILDENV / ".buildenv-path"
-    current = str(BUILDENV.resolve())
+    stamp = BUILD_LOCAL / ".tools-root"
+    current = str(TOOLS_ROOT.resolve())
     previous = stamp.read_text(encoding="utf-8").strip() if stamp.exists() else None
     if previous == current:
         return
     if previous is not None:
-        log(f"build env moved from {previous}")
-        shutil.rmtree(BUILDENV / "caches/gradle", ignore_errors=True)
+        log(f"tools moved from {previous}")
+        shutil.rmtree(GRADLE_HOME, ignore_errors=True)
         (FLUTTER_DIR / "android/local.properties").unlink(missing_ok=True)
         info("cleared the Gradle cache and Flutter's local.properties")
-    BUILDENV.mkdir(parents=True, exist_ok=True)
+    BUILD_LOCAL.mkdir(parents=True, exist_ok=True)
     stamp.write_text(current, encoding="utf-8")
 
 
 def msys_path(path):
     """Git's perl is an msys program: it splits PERL5LIB on ':' and resolves
-    '/d/...' through the msys drive mounts, so a 'D:\...' value would be cut in
+    '/d/...' through the msys drive mounts, so a 'D:\\...' value would be cut in
     half at the colon."""
     path = Path(path).resolve()
     return "/" + path.drive[0].lower() + path.as_posix()[2:]
@@ -209,32 +202,11 @@ def perl_ok(module):
                           capture_output=True, env=env).returncode == 0
 
 
-def find_ndk():
-    """The build env holds its own NDK, pinned to the r28c the CI uses. Other
-    projects on this machine keep their own versions under the Android SDK, and
-    picking "the newest installed one" would silently follow those."""
-    if os.environ.get("ANDROID_NDK_HOME"):
-        return Path(os.environ["ANDROID_NDK_HOME"])
-    return TOOLCHAINS / "ndk"
-
-
 def find_llvm():
-    """A stock LLVM on purpose. The OLLVM forks next to this repo can also drive
+    """A stock LLVM on purpose. The OLLVM fork on the partition can also drive
     ffigen/bindgen, but keeping the whole toolchain stock removes a variable from
-    an already fragile cross-compile. Override with LLVM_PATH."""
-    candidates = [Path(os.environ["LLVM_PATH"])] if os.environ.get("LLVM_PATH") else []
-    candidates += [LLVM_DIR, Path(r"C:\Program Files\LLVM")]
-    for c in candidates:
-        if (c / "bin/libclang.dll").exists():
-            return c
-    return None
-
-
-NDK = find_ndk()
-NDK_LLVM = NDK / "toolchains/llvm/prebuilt/windows-x86_64"
-NDK_BIN = NDK_LLVM / "bin"
-NDK_MAKE_BIN = NDK / "prebuilt/windows-x86_64/bin"
-NDK_SYSROOT_LIB = NDK_LLVM / "sysroot/usr/lib" / RUST_TARGET
+    an already fragile cross-compile."""
+    return LLVM_DIR if (LLVM_DIR / "bin/libclang.dll").exists() else None
 
 
 def build_env():
@@ -253,12 +225,12 @@ def build_env():
     # appended, never prepended: its msys DLLs shadow system ones and make
     # msbuild die with 0xc0000142 (DLL init failed).
     # Drop other msys bin dirs too: a system Git's usr\bin sits on PATH ahead of
-    # ours, and its perl would win over the portable one this build ships.
+    # ours, and its perl would win over the one the partition supplies.
     def wanted(entry):
         low = entry.lower().replace("/", "\\")
         if "strawberry" in low:
             return False
-        return not (low.endswith(r"\git\usr\bin") and str(BUILDENV).lower() not in low)
+        return not (low.endswith(r"\git\usr\bin") and str(GIT_DIR).lower() not in low)
 
     entries = [p for p in env["PATH"].split(os.pathsep) if p and wanted(p)]
     env["PATH"] = os.pathsep.join(
@@ -283,10 +255,11 @@ def build_env():
     # rewrite that POSIX path back to 'D:/...', which perl then splits at the
     # colon into two bogus @INC entries. Exclude the variable from conversion.
     env["MSYS2_ENV_CONV_EXCL"] = "PERL5LIB"
-    # Keep this build's Gradle and pub caches out of the shared per-user ones,
-    # so the pinned Flutter cannot disturb other projects on this machine.
-    env["GRADLE_USER_HOME"] = str(BUILDENV / "caches/gradle")
-    env["PUB_CACHE"] = str(BUILDENV / "caches/pub")
+    # Gradle's cache belongs to this repository -- it is keyed by the projects
+    # built through it -- while the pub cache is keyed by package and version and
+    # is shared with every other repository on the partition.
+    env["GRADLE_USER_HOME"] = str(GRADLE_HOME)
+    env["PUB_CACHE"] = str(CACHE_ROOT / "pub")
 
     # libsodium-sys builds from source via autotools on Linux CI, which cannot run
     # here, so point it at prebuilt libs. Do not set SODIUM_STATIC (deprecated,
@@ -348,8 +321,6 @@ def which(name):
     return shutil.which(name, path=build_env()["PATH"])
 
 
-MANIFEST = BUILDENV / "patched-files.json"
-
 # Files the build tools rewrite on their own (cargo because of the hwcodec
 # [patch], `flutter pub get` because the pinned Flutter resolves older packages).
 # They are build byproducts here, not edits worth keeping.
@@ -361,7 +332,7 @@ def _manifest():
 
 
 def _record(rel, digest):
-    BUILDENV.mkdir(parents=True, exist_ok=True)
+    BUILD_LOCAL.mkdir(parents=True, exist_ok=True)
     data = _manifest()
     data[rel] = digest
     MANIFEST.write_text(json.dumps(data, indent=2), encoding="utf-8")
@@ -410,20 +381,19 @@ def restore_patched_files():
     MANIFEST.unlink(missing_ok=True)
 
 
-# --------------------------------------------------------------------------- 1. install
+# --------------------------------------------------------------------------- 1. tools
 
 
-def phase_install(args):
-    """Put everything the build needs on the machine."""
-    _install_git()
-    _install_jdk()
-    _install_llvm()
-    _install_perl_modules()
-    _install_rust()
-    _install_ndk()
-    _install_android_sdk()
-    _install_vcpkg()
-    _install_flutter_sdk(args.force)
+def phase_tools(args):
+    """Check the partition's tools, then add what only this build needs."""
+    try:
+        prepare(USE_TOOL, verbose=True)
+    except NotReady as exc:
+        fail(f"{exc}\n  Install or repair them on the partition at {TOOLS_ROOT}.")
+    _stage_perl_modules()
+    _install_rust_extras()
+    _patch_flutter_sdk()
+    _check_build_only_tools()
 
 
 def _download(url, dest):
@@ -438,61 +408,9 @@ def _download(url, dest):
     return dest
 
 
-def _latest_asset(api_url, pattern):
-    import fnmatch
-    with urllib.request.urlopen(api_url) as r:
-        release = json.load(r)
-    for asset in release["assets"]:
-        if fnmatch.fnmatch(asset["name"], pattern):
-            return asset["browser_download_url"]
-    fail(f"no asset matching {pattern} in {api_url}")
-
-
-def _install_git():
-    """Git supplies two things: git itself, and the msys perl that OpenSSL's
-    Configure insists on (it rejects a native Windows perl)."""
-    if (GIT_DIR / "cmd/git.exe").exists():
-        return
-    archive = _download(_latest_asset(GIT_URL_API, GIT_ASSET), DOWNLOADS / "PortableGit.7z.exe")
-    info(f"extracting PortableGit into {GIT_DIR}")
-    run([archive, f"-o{GIT_DIR}", "-y"], env=dict(os.environ))
-    if not (GIT_DIR / "usr/bin/perl.exe").exists():
-        fail(f"perl.exe missing after extracting {archive}")
-
-
-def _install_jdk():
-    if (JDK_DIR / "bin/java.exe").exists():
-        return
-    archive = _download(_latest_asset(JDK_URL_API, JDK_ASSET), DOWNLOADS / "jdk17.zip")
-    info(f"extracting the JDK into {JDK_DIR}")
-    with zipfile.ZipFile(archive) as z:
-        z.extractall(TOOLCHAINS)
-    extracted = next(TOOLCHAINS.glob("jdk-17*"), None)
-    if extracted:
-        extracted.rename(JDK_DIR)
-    if not (JDK_DIR / "bin/java.exe").exists():
-        fail(f"java.exe missing after extracting {archive}")
-
-
-def _install_android_sdk():
-    missing = [p for p in (ANDROID_SDK / "build-tools" / BUILD_TOOLS_VERSION / "zipalign.exe",
-                           ANDROID_SDK / "platforms" / ANDROID_PLATFORM / "android.jar",
-                           ANDROID_SDK / "platform-tools/adb.exe") if not p.exists()]
-    if not missing:
-        return
-    fail("Android SDK components missing:\n  " + "\n  ".join(str(p) for p in missing)
-         + "\n  Install them with Android Studio's SDK Manager "
-           f"(Build-Tools {BUILD_TOOLS_VERSION}, Platform {ANDROID_PLATFORM}, Platform-Tools),\n"
-           f"  then copy those three directories under {ANDROID_SDK}.")
-
-
-def _install_rust():
-    """Bootstrap a rustup of this build's own. `--no-modify-path` matters: the
-    shared installation must keep owning the user's PATH."""
-    if not (CARGO_HOME / "bin/rustc.exe").exists():
-        init = _download(RUSTUP_INIT_URL, DOWNLOADS / "rustup-init.exe")
-        run([init, "-y", "--no-modify-path", "--profile", "minimal",
-             "--default-toolchain", f"stable-{HOST_RUST_TARGET}", "--target", RUST_TARGET])
+def _install_rust_extras():
+    """The partition supplies rustup and cargo; this build needs a GNU host
+    toolchain, the Android target and two cargo subcommands on top."""
     # A GNU host, so build scripts link with MinGW's gcc instead of MSVC's link.exe.
     if capture(["rustc", "-vV"])[1].find(HOST_RUST_TARGET) < 0:
         run(["rustup", "toolchain", "install", f"stable-{HOST_RUST_TARGET}", "--profile", "minimal"])
@@ -501,41 +419,17 @@ def _install_rust():
     # bindgen shells out to rustfmt to format what it generates.
     if capture(["rustfmt", "--version"])[0] != 0:
         run(["rustup", "component", "add", "rustfmt"])
-    for tool, args in (("cargo-ndk", ["cargo-ndk"]),
+    for name, args in (("cargo-ndk", ["cargo-ndk"]),
                        ("flutter_rust_bridge_codegen",
                         ["flutter_rust_bridge_codegen", "--version", FRB_VERSION,
                          "--features", "uuid"])):
-        if not (CARGO_HOME / f"bin/{tool}.exe").exists():
+        if not (CARGO_HOME / f"bin/{name}.exe").exists():
             run(["cargo", "install", *args, "--locked"])
 
 
-def _install_ndk():
-    if (NDK / "source.properties").exists():
-        return
-    fail(f"no NDK at {NDK}.\n"
-         f"  Install NDK {NDK_VERSION} with Android Studio's SDK Manager, then move it here:\n"
-         f"  move \"%LOCALAPPDATA%\\Android\\Sdk\\ndk\\{NDK_VERSION}\" \"{NDK}\"")
-
-
-def _install_llvm():
-    if find_llvm():
-        return
-    import tarfile
-    archive = _download(LLVM_URL, DOWNLOADS / Path(LLVM_URL).name)
-    info(f"extracting LLVM into {LLVM_DIR}")
-    with tarfile.open(archive) as tf:
-        tf.extractall(TOOLCHAINS)
-    extracted = next(TOOLCHAINS.glob("clang+llvm-*"), None)
-    if extracted:
-        extracted.rename(LLVM_DIR)
-    if not find_llvm():
-        fail(f"libclang.dll still missing after extracting {archive}")
-
-
 def _strawberry_lib():
-    for candidate in (STRAWBERRY_DIR / "perl/lib", Path(r"C:\Strawberry\perl\lib")):
-        if candidate.is_dir():
-            return candidate
+    if (STRAWBERRY_DIR / "perl/lib").is_dir():
+        return STRAWBERRY_DIR / "perl/lib"
     archive = _download(STRAWBERRY_URL, DOWNLOADS / Path(STRAWBERRY_URL).name)
     info(f"extracting Strawberry Perl into {STRAWBERRY_DIR}")
     with zipfile.ZipFile(archive) as z:
@@ -546,12 +440,12 @@ def _strawberry_lib():
     return lib
 
 
-def _install_perl_modules():
+def _stage_perl_modules():
     """Stage the modules under PERLLIB and reach them through PERL5LIB, rather
-    than writing into the Git for Windows installation."""
+    than writing into the Git installation the partition owns."""
     perl = GIT_USR_BIN / "perl.exe"
     if not perl.exists():
-        fail(f"{perl} not found; install Git for Windows")
+        fail(f"{perl} not found; the partition's git tool is incomplete")
     missing = [(m, d) for m, d in PERL_MODULES.items() if not perl_ok(m)]
     if not missing:
         return
@@ -568,29 +462,10 @@ def _install_perl_modules():
             fail(f"{module} is still not loadable by {perl}")
 
 
-def _install_vcpkg():
-    if (VCPKG_ROOT / "vcpkg.exe").exists():
-        return
-    if not (VCPKG_ROOT / ".git").exists():
-        run(["git", "clone", "https://github.com/microsoft/vcpkg.git", str(VCPKG_ROOT)])
-    run(["git", "checkout", VCPKG_COMMIT], cwd=VCPKG_ROOT)
-    run([str(VCPKG_ROOT / "bootstrap-vcpkg.bat"), "-disableMetrics"], cwd=VCPKG_ROOT)
-
-
-def _install_flutter_sdk(force):
-    if (FLUTTER_SDK / "bin/flutter.bat").exists() and not force:
-        info(f"Flutter SDK already at {FLUTTER_SDK}")
-    else:
-        zip_path = DOWNLOADS / "flutter.zip"
-        DOWNLOADS.mkdir(parents=True, exist_ok=True)
-        FLUTTER_SDK.parent.mkdir(parents=True, exist_ok=True)
-        if not zip_path.exists():
-            info(f"downloading Flutter {FLUTTER_VERSION} (~1 GB)")
-            urllib.request.urlretrieve(FLUTTER_ZIP_URL, zip_path)
-        info("extracting Flutter SDK")
-        with zipfile.ZipFile(zip_path) as z:
-            z.extractall(FLUTTER_SDK.parent)
-    # The CI applies this to the SDK itself for 3.24.5; do the same.
+def _patch_flutter_sdk():
+    """The CI applies this to the SDK itself for 3.24.5; do the same. It belongs
+    to that Flutter version, which is why it is applied to the SDK rather than
+    carried here."""
     patch = REPO / ".github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff"
     if subprocess.run(["git", "apply", "--reverse", "--check", str(patch)],
                       cwd=str(FLUTTER_SDK), capture_output=True).returncode != 0:
@@ -598,71 +473,24 @@ def _install_flutter_sdk(force):
         info("applied the dropdown_menu patch to the Flutter SDK")
 
 
-# --------------------------------------------------------------------------- 2. verify
-
-
-def phase_verify(args):
-    """Check what is installed. Reports everything before failing, so one run
-    tells you the whole list of what is missing."""
+def _check_build_only_tools():
+    """The pieces the partition's own checks know nothing about."""
     problems = []
-
-    for name in ("git", "java", "cargo", "rustup"):
-        path = which(name)
-        print(f"    {name:<24} {path or 'MISSING'}")
-        if not path:
-            problems.append(f"{name} not on PATH")
-
-    # vcpkg vendors its own cmake, ninja and nasm under downloads/tools, so these
-    # only matter if it has to build a port and prefers a system copy.
-    for name in ("cmake", "ninja", "nasm"):
-        print(f"    {name + ' (optional)':<24} {which(name) or 'not on PATH; vcpkg will use its own'}")
-
-    for label, path in (("rustc", CARGO_HOME / "bin/rustc.exe"),
-                        ("cargo-ndk", CARGO_HOME / "bin/cargo-ndk.exe"),
+    for label, path in (("cargo-ndk", CARGO_HOME / "bin/cargo-ndk.exe"),
                         ("frb codegen", CARGO_HOME / "bin/flutter_rust_bridge_codegen.exe"),
-                        ("NDK", NDK), ("NDK clang", NDK_BIN), ("NDK make", NDK_MAKE_BIN),
-                        ("NDK sysroot libs", NDK_SYSROOT_LIB), ("vcpkg", VCPKG_ROOT / "vcpkg.exe"),
-                        ("Flutter SDK", FLUTTER_SDK / "bin/flutter.bat"), ("keystore", KEYSTORE)):
+                        ("NDK clang", NDK_BIN / "clang.exe"),
+                        ("NDK sysroot libs", NDK_SYSROOT_LIB),
+                        ("libclang", LLVM_DIR / "bin/libclang.dll"),
+                        ("android platform", ANDROID_SDK / "platforms" / ANDROID_PLATFORM / "android.jar"),
+                        ("zipalign", ANDROID_SDK / "build-tools" / BUILD_TOOLS_VERSION / "zipalign.exe"),
+                        ("apksigner", ANDROID_SDK / "build-tools" / BUILD_TOOLS_VERSION / "apksigner.bat"),
+                        ("keystore", KEYSTORE)):
         ok = path.exists()
-        print(f"    {label:<24} {path} {'' if ok else '  <-- MISSING'}")
+        print(f"    {label:<20} {path} {'' if ok else '  <-- MISSING'}")
         if not ok:
             problems.append(f"{label} missing at {path}")
-
-    llvm = find_llvm()
-    print(f"    {'libclang':<24} {llvm / 'bin/libclang.dll' if llvm else 'MISSING'}")
-    if not llvm:
-        problems.append("libclang.dll not found (winget install --id LLVM.LLVM -e)")
-
-    for label, tool in (("zipalign", "zipalign.exe"), ("apksigner", "apksigner.bat")):
-        found = _build_tool(tool, required=False)
-        print(f"    {label:<24} {found or 'MISSING'}")
-        if not found:
-            problems.append(f"{label} missing from the Android SDK build-tools")
-
-    code, out = capture(["flutter", "--version"])
-    version = next((ln for ln in out.splitlines() if ln.startswith("Flutter ")), out.strip()[:80])
-    print(f"    {'flutter version':<24} {version}")
-    if code != 0 or FLUTTER_VERSION not in version:
-        problems.append(f"flutter is not {FLUTTER_VERSION}: {version}")
-
-    code, out = capture(["rustc", "--version"])
-    print(f"    {'rustc':<24} {out.strip()[:80]}")
-    if code != 0:
-        problems.append("rustc not runnable")
-    elif RUST_TOOLCHAIN is None:
-        code, out = capture(["rustc", "--print", "target-list"])
-        if RUST_TARGET not in out:
-            problems.append(f"{RUST_TARGET} target not installed (rustup target add {RUST_TARGET})")
-
-    perl = GIT_USR_BIN / "perl.exe"
-    missing_modules = [m for m in PERL_MODULES if not perl_ok(m)]
-    print(f"    {'git perl modules':<24} {'OK' if not missing_modules else ', '.join(missing_modules)}")
-    if missing_modules:
-        problems.append(f"Git perl is missing {', '.join(missing_modules)}")
-
     if problems:
-        fail("verification failed:\n  - " + "\n  - ".join(problems))
-    info("all checks passed")
+        fail("build tools missing:\n  - " + "\n  - ".join(problems))
 
 
 def _build_tool(name, required=True):
@@ -670,11 +498,11 @@ def _build_tool(name, required=True):
     if path.exists():
         return path
     if required:
-        fail(f"{name} not found at {path}; run the install phase")
+        fail(f"{name} not found at {path}; run the tools phase")
     return None
 
 
-# --------------------------------------------------------------------------- 3. env
+# --------------------------------------------------------------------------- 2. env
 
 
 def phase_env(args):
@@ -684,7 +512,7 @@ def phase_env(args):
     checks below are the ones that failed first when a value was wrong.
     """
     env = build_env()
-    for key in ("VCPKG_ROOT", "ANDROID_NDK_HOME", "SODIUM_LIB_DIR", "CPATH",
+    for key in ("VCPKG_ROOT", "ANDROID_NDK_HOME", "GRADLE_USER_HOME", "PUB_CACHE",
                 "LIBCLANG_PATH", "RUSTFLAGS", "RUSTUP_TOOLCHAIN"):
         if env.get(key):
             print(f"    {key:<18} {env[key]}")
@@ -720,7 +548,7 @@ def phase_env(args):
     info("environment is usable")
 
 
-# --------------------------------------------------------------------------- 4. prebuild
+# --------------------------------------------------------------------------- 3. prebuild
 
 
 def phase_prebuild(args):
@@ -738,7 +566,7 @@ def _overlay_triplet():
     """aom's cmake defaults CMAKE_ASM_COMPILER to a bare `as`, which the Windows
     NDK does not ship. Override it in a local overlay so the repo's own triplet,
     used by the Linux CI, stays untouched."""
-    overlay = BUILDENV / "triplets"
+    overlay = BUILD_LOCAL / "triplets"
     overlay.mkdir(parents=True, exist_ok=True)
     base = (REPO / "res/vcpkg-triplets" / f"{VCPKG_TRIPLET}.cmake").read_text()
     base = base.replace(
@@ -784,7 +612,7 @@ def _patch_libsodium_sys():
     the host: the host and the Android builds would be pointed at the same
     libsodium.a. Patch a local copy to look at <TARGET>_SODIUM_LIB_DIR first."""
     if not (LIBSODIUM_SYS_DIR / "build.rs").exists():
-        src = next((TOOLCHAINS / "cargo/registry/src").glob(f"*/libsodium-sys-{LIBSODIUM_SYS_VERSION}"), None)
+        src = next((CARGO_HOME / "registry/src").glob(f"*/libsodium-sys-{LIBSODIUM_SYS_VERSION}"), None)
         if src is None:
             fail(f"libsodium-sys {LIBSODIUM_SYS_VERSION} not in the cargo registry yet; "
                  "run the prebuild phase once so cargo fetches it")
@@ -826,7 +654,7 @@ def _patch_hwcodec():
     therefore drags in win.cpp and d3d11. Patch a local checkout to test the
     target instead, and point cargo at it."""
     if not HWCODEC_DIR.exists():
-        BUILDENV.mkdir(parents=True, exist_ok=True)
+        HWCODEC_DIR.parent.mkdir(parents=True, exist_ok=True)
         run(["git", "clone", HWCODEC_URL, str(HWCODEC_DIR)], cwd=HWCODEC_DIR.parent)
         run(["git", "checkout", HWCODEC_REV], cwd=HWCODEC_DIR)
         run(["git", "submodule", "update", "--init", "--recursive"], cwd=HWCODEC_DIR)
@@ -862,7 +690,7 @@ def _generate_bridge(force):
         return
     llvm = find_llvm()
     if not llvm:
-        fail("libclang.dll not found; run the install phase")
+        fail(f"libclang.dll not found under {LLVM_DIR}")
     run(["flutter_rust_bridge_codegen", "--llvm-path", str(llvm),
          "--rust-input", "./src/flutter_ffi.rs",
          "--dart-output", "./flutter/lib/generated_bridge.dart",
@@ -893,7 +721,7 @@ def _stage_jni_libs():
         info(f"{f.name}  {f.stat().st_size:,} bytes")
 
 
-# --------------------------------------------------------------------------- 5. build
+# --------------------------------------------------------------------------- 4. build
 
 
 def phase_build(args):
@@ -930,7 +758,7 @@ def _apply_build_tweaks():
 def _sign(built):
     if not KEYSTORE.exists():
         fail(f"keystore not found: {KEYSTORE}")
-    BUILDENV.mkdir(parents=True, exist_ok=True)
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
     run([_build_tool("zipalign.exe"), "-p", "-f", "4", built, ALIGNED_APK])
     run([_build_tool("apksigner.bat"), "sign",
          "--ks", KEYSTORE, "--ks-key-alias", KEY_ALIAS,
@@ -946,7 +774,7 @@ def _adb_install():
     run(["adb", "install", "-r", OUT_APK])
 
 
-# --------------------------------------------------------------------------- 6. cleanup
+# --------------------------------------------------------------------------- 5. cleanup
 
 
 def phase_cleanup(args):
@@ -967,8 +795,7 @@ def phase_cleanup(args):
 # --------------------------------------------------------------------------- driver
 
 PHASES = [
-    ("install", phase_install),
-    ("verify", phase_verify),
+    ("tools", phase_tools),
     ("env", phase_env),
     ("prebuild", phase_prebuild),
     ("build", phase_build),

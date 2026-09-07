@@ -1,0 +1,16 @@
+{
+  "comment": "The tools this repository's local Android build uses, resolved by E:/build_env.py against E:/tools.json. null takes the default version; a string pins one. Never write a path here.",
+  "tools": {
+    "git": null,
+    "jdk": null,
+    "android-sdk": null,
+    "ndk": "28.2.13676358",
+    "flutter": "3.24.5",
+    "llvm": null,
+    "mingw": null,
+    "rustup": null,
+    "cargo": null,
+    "vcpkg": null,
+    "sodium": null
+  }
+}

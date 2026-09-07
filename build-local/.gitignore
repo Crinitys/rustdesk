@@ -1,0 +1,7 @@
+# The local Android build stages everything it downloads, patches or produces
+# here. Only the files that describe the build are tracked.
+*
+!.gitignore
+!README.md
+!use_tool.json
+!*.py
