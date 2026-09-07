@@ -40,7 +40,15 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent
 FLUTTER_DIR = REPO / "flutter"
-BUILD_DIR = REPO / "build-local"
+
+# Everything this build downloads, compiles or stages lives under one directory
+# outside the repo, so none of it leaks into the rest of the machine and it can
+# be deleted in one go. Override with RUSTDESK_BUILDENV.
+BUILDENV = Path(os.environ.get("RUSTDESK_BUILDENV", REPO.parent / "rustdesk-buildenv"))
+TOOLCHAINS = BUILDENV / "toolchains"
+DOWNLOADS = BUILDENV / "caches/downloads"
+PERLLIB = BUILDENV / "perllib"
+OUT_DIR = BUILDENV / "out"
 
 ABI = "arm64-v8a"
 RUST_TARGET = "aarch64-linux-android"
@@ -53,15 +61,15 @@ HOST_VCPKG_TRIPLET = "x64-windows-static"
 FLUTTER_VERSION = "3.24.5"
 FLUTTER_ZIP_URL = ("https://storage.googleapis.com/flutter_infra_release/releases/stable/"
                    f"windows/flutter_windows_{FLUTTER_VERSION}-stable.zip")
-FLUTTER_SDK = BUILD_DIR / "flutter-sdk/flutter"
+FLUTTER_SDK = TOOLCHAINS / "flutter"
 
-VCPKG_ROOT = Path(os.environ.get("VCPKG_ROOT", r"D:\vcpkg"))
+VCPKG_ROOT = Path(os.environ.get("VCPKG_ROOT", TOOLCHAINS / "vcpkg"))
 VCPKG_COMMIT = "9e593bb18ea69cc5095e012465dcd675a822ed0d"
 
 FRB_VERSION = "1.80.1"  # must match `flutter_rust_bridge` in flutter/pubspec.yaml
 HWCODEC_URL = "https://github.com/rustdesk-org/hwcodec"
 HWCODEC_REV = "778df1f99597722473b29443bac22ae6c23946fe"
-HWCODEC_DIR = BUILD_DIR / "hwcodec"
+HWCODEC_DIR = BUILDENV / "sources/hwcodec"
 
 # Default to rustup's own toolchain. The in-repo stage1 compiler is built against
 # an OLLVM fork and the librustdesk.so it produces crashes the app on launch
@@ -70,18 +78,30 @@ HWCODEC_DIR = BUILD_DIR / "hwcodec"
 RUST_TOOLCHAIN = os.environ.get("RUSTDESK_RUST_TOOLCHAIN") or None
 
 GIT_USR_BIN = Path(r"C:\Program Files\Git\usr\bin")
-GIT_PERL_SITE = Path(r"C:\Program Files\Git\usr\share\perl5\site_perl")
-STRAWBERRY_LIB = Path(r"C:\Strawberry\perl\lib")
-LLVM_DEFAULT = Path(r"C:\Program Files\LLVM")
+# LLVM is here only so ffigen/bindgen have a libclang.dll; the Android SDK ships
+# libclang_android.dll, which they cannot load. Kept inside the build env rather
+# than installed system-wide, where its clang would shadow other projects'.
+LLVM_VERSION = "22.1.8"
+LLVM_DIR = TOOLCHAINS / "llvm"
+LLVM_URL = (f"https://github.com/llvm/llvm-project/releases/download/llvmorg-{LLVM_VERSION}"
+            f"/clang+llvm-{LLVM_VERSION}-x86_64-pc-windows-msvc.tar.xz")
+
+# Strawberry Perl is never executed; it is only a source of the pure-perl modules
+# Git's cut-down perl lacks. The portable zip avoids an installer that would put
+# its gcc/make/ld on the system PATH, where other projects would pick them up.
+STRAWBERRY_VERSION = "5.40.2.1"
+STRAWBERRY_DIR = TOOLCHAINS / "strawberry"
+STRAWBERRY_URL = (f"https://strawberryperl.com/download/{STRAWBERRY_VERSION}"
+                  f"/strawberry-perl-{STRAWBERRY_VERSION}-64bit-portable.zip")
 
 KEYSTORE = Path(os.environ.get("RUSTDESK_KEYSTORE",
                                r"C:\Users\Thurion\.android-keys\rustdesk-personal.keystore"))
 KEY_ALIAS = os.environ.get("RUSTDESK_KEY_ALIAS", "rustdesk-personal")
 KEY_PASS = os.environ.get("RUSTDESK_KEY_PASS", "rustdesk123")
 
-SODIUM_DIR = BUILD_DIR / "sodium"
-OUT_APK = BUILD_DIR / f"rustdesk-{ABI}-signed.apk"
-ALIGNED_APK = BUILD_DIR / f"rustdesk-{ABI}-aligned.apk"
+SODIUM_DIR = BUILDENV / "libs/sodium"
+OUT_APK = OUT_DIR / f"rustdesk-{ABI}-signed.apk"
+ALIGNED_APK = OUT_DIR / f"rustdesk-{ABI}-aligned.apk"
 
 # Perl modules OpenSSL's Configure needs that Git's cut-down perl omits. They are
 # pure perl, so they can be borrowed from Strawberry; XS modules cannot.
@@ -108,6 +128,20 @@ def fail(msg):
     raise SystemExit(f"ERROR: {msg}")
 
 
+def msys_path(path):
+    """Git's perl is an msys program: it splits PERL5LIB on ':' and resolves
+    '/d/...' through the msys drive mounts, so a 'D:\...' value would be cut in
+    half at the colon."""
+    path = Path(path).resolve()
+    return "/" + path.drive[0].lower() + path.as_posix()[2:]
+
+
+def perl_ok(module):
+    env = dict(os.environ, PERL5LIB=msys_path(PERLLIB))
+    return subprocess.run([str(GIT_USR_BIN / "perl.exe"), f"-M{module}", "-e", "1"],
+                          capture_output=True, env=env).returncode == 0
+
+
 def find_ndk():
     if os.environ.get("ANDROID_NDK_HOME"):
         return Path(os.environ["ANDROID_NDK_HOME"])
@@ -122,7 +156,9 @@ def find_llvm():
     """A stock LLVM on purpose. The OLLVM forks next to this repo can also drive
     ffigen/bindgen, but keeping the whole toolchain stock removes a variable from
     an already fragile cross-compile. Override with LLVM_PATH."""
-    for c in ([Path(os.environ["LLVM_PATH"])] if os.environ.get("LLVM_PATH") else []) + [LLVM_DEFAULT]:
+    candidates = [Path(os.environ["LLVM_PATH"])] if os.environ.get("LLVM_PATH") else []
+    candidates += [LLVM_DIR, Path(r"C:\Program Files\LLVM")]
+    for c in candidates:
         if (c / "bin/libclang.dll").exists():
             return c
     return None
@@ -157,6 +193,13 @@ def build_env():
 
     if RUST_TOOLCHAIN:
         env["RUSTUP_TOOLCHAIN"] = RUST_TOOLCHAIN
+
+    # Modules OpenSSL's Configure needs, staged rather than installed into Git.
+    env["PERL5LIB"] = msys_path(PERLLIB)
+    # Keep this build's Gradle and pub caches out of the shared per-user ones,
+    # so the pinned Flutter cannot disturb other projects on this machine.
+    env["GRADLE_USER_HOME"] = str(BUILDENV / "caches/gradle")
+    env["PUB_CACHE"] = str(BUILDENV / "caches/pub")
 
     # libsodium-sys builds from source via autotools on Linux CI, which cannot run
     # here, so point it at prebuilt libs. Do not set SODIUM_STATIC (deprecated,
@@ -217,36 +260,6 @@ def which(name):
     return shutil.which(name, path=build_env()["PATH"])
 
 
-def winget_install(package_id):
-    info(f"installing {package_id} via winget")
-    run(["winget", "install", "--id", package_id, "-e",
-         "--accept-source-agreements", "--accept-package-agreements",
-         "--disable-interactivity"], env=dict(os.environ), check=False)
-
-
-MANIFEST = BUILD_DIR / "patched-files.json"
-
-# Files the build tools rewrite on their own (cargo because of the hwcodec
-# [patch], `flutter pub get` because the pinned Flutter resolves older packages).
-# They are build byproducts here, not edits worth keeping.
-BUILD_BYPRODUCTS = ["Cargo.lock", "flutter/pubspec.lock"]
-
-
-def _manifest():
-    return json.loads(MANIFEST.read_text(encoding="utf-8")) if MANIFEST.exists() else {}
-
-
-def _record(rel, digest):
-    BUILD_DIR.mkdir(parents=True, exist_ok=True)
-    data = _manifest()
-    data[rel] = digest
-    MANIFEST.write_text(json.dumps(data, indent=2), encoding="utf-8")
-
-
-def _sha(path):
-    return hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else ""
-
-
 def patch_file(path, transform, note):
     """Edit a tracked file and remember that we did, so `cleanup` can put it back.
 
@@ -291,12 +304,7 @@ def restore_patched_files():
 
 def phase_install(args):
     """Put everything the build needs on the machine."""
-    if not find_llvm():
-        # The Android SDK only ships libclang_android.dll, which ffigen cannot use.
-        winget_install("LLVM.LLVM")
-    if not STRAWBERRY_LIB.is_dir():
-        winget_install("StrawberryPerl.StrawberryPerl")
-
+    _install_llvm()
     _install_perl_modules()
     _install_vcpkg()
     _install_flutter_sdk(args.force)
@@ -316,21 +324,66 @@ def phase_install(args):
             run(["rustup", "component", "add", "rustfmt"], env=dict(os.environ))
 
 
+def _download(url, dest):
+    if dest.exists():
+        return dest
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    info(f"downloading {url}")
+    try:
+        urllib.request.urlretrieve(url, dest)
+    except Exception as exc:
+        fail(f"download failed: {url}\n  {exc}")
+    return dest
+
+
+def _install_llvm():
+    if find_llvm():
+        return
+    import tarfile
+    archive = _download(LLVM_URL, DOWNLOADS / Path(LLVM_URL).name)
+    info(f"extracting LLVM into {LLVM_DIR}")
+    with tarfile.open(archive) as tf:
+        tf.extractall(TOOLCHAINS)
+    extracted = next(TOOLCHAINS.glob("clang+llvm-*"), None)
+    if extracted:
+        extracted.rename(LLVM_DIR)
+    if not find_llvm():
+        fail(f"libclang.dll still missing after extracting {archive}")
+
+
+def _strawberry_lib():
+    for candidate in (STRAWBERRY_DIR / "perl/lib", Path(r"C:\Strawberry\perl\lib")):
+        if candidate.is_dir():
+            return candidate
+    archive = _download(STRAWBERRY_URL, DOWNLOADS / Path(STRAWBERRY_URL).name)
+    info(f"extracting Strawberry Perl into {STRAWBERRY_DIR}")
+    with zipfile.ZipFile(archive) as z:
+        z.extractall(STRAWBERRY_DIR)
+    lib = STRAWBERRY_DIR / "perl/lib"
+    if not lib.is_dir():
+        fail(f"{lib} not found after extracting {archive}")
+    return lib
+
+
 def _install_perl_modules():
+    """Stage the modules under PERLLIB and reach them through PERL5LIB, rather
+    than writing into the Git for Windows installation."""
     perl = GIT_USR_BIN / "perl.exe"
     if not perl.exists():
         fail(f"{perl} not found; install Git for Windows")
-    for module, subdir in PERL_MODULES.items():
-        if subprocess.run([str(perl), f"-M{module}", "-e", "1"], capture_output=True).returncode == 0:
-            continue
-        src = STRAWBERRY_LIB / subdir
+    missing = [(m, d) for m, d in PERL_MODULES.items() if not perl_ok(m)]
+    if not missing:
+        return
+    strawberry_lib = _strawberry_lib()
+    for module, subdir in missing:
+        src = strawberry_lib / subdir
         if not src.is_dir():
-            fail(f"{module} missing from Git's perl and no Strawberry Perl at {src}")
-        dst = GIT_PERL_SITE / subdir
+            fail(f"{module} missing from Git's perl and not found at {src}")
+        dst = PERLLIB / subdir
         dst.mkdir(parents=True, exist_ok=True)
         shutil.copytree(src, dst, dirs_exist_ok=True)
-        info(f"copied {subdir} into Git's perl for {module}")
-        if subprocess.run([str(perl), f"-M{module}", "-e", "1"], capture_output=True).returncode != 0:
+        info(f"staged {subdir} in {PERLLIB} for {module}")
+        if not perl_ok(module):
             fail(f"{module} is still not loadable by {perl}")
 
 
@@ -347,7 +400,8 @@ def _install_flutter_sdk(force):
     if (FLUTTER_SDK / "bin/flutter.bat").exists() and not force:
         info(f"Flutter SDK already at {FLUTTER_SDK}")
     else:
-        zip_path = FLUTTER_SDK.parent / "flutter.zip"
+        zip_path = DOWNLOADS / "flutter.zip"
+        DOWNLOADS.mkdir(parents=True, exist_ok=True)
         FLUTTER_SDK.parent.mkdir(parents=True, exist_ok=True)
         if not zip_path.exists():
             info(f"downloading Flutter {FLUTTER_VERSION} (~1 GB)")
@@ -412,9 +466,7 @@ def phase_verify(args):
             problems.append(f"{RUST_TARGET} target not installed (rustup target add {RUST_TARGET})")
 
     perl = GIT_USR_BIN / "perl.exe"
-    missing_modules = [m for m in PERL_MODULES
-                       if subprocess.run([str(perl), f"-M{m}", "-e", "1"],
-                                         capture_output=True).returncode != 0]
+    missing_modules = [m for m in PERL_MODULES if not perl_ok(m)]
     print(f"    {'git perl modules':<24} {'OK' if not missing_modules else ', '.join(missing_modules)}")
     if missing_modules:
         problems.append(f"Git perl is missing {', '.join(missing_modules)}")
@@ -497,7 +549,7 @@ def _overlay_triplet():
     """aom's cmake defaults CMAKE_ASM_COMPILER to a bare `as`, which the Windows
     NDK does not ship. Override it in a local overlay so the repo's own triplet,
     used by the Linux CI, stays untouched."""
-    overlay = BUILD_DIR / "triplets"
+    overlay = BUILDENV / "triplets"
     overlay.mkdir(parents=True, exist_ok=True)
     base = (REPO / "res/vcpkg-triplets" / f"{VCPKG_TRIPLET}.cmake").read_text()
     base = base.replace(
@@ -552,8 +604,8 @@ def _patch_hwcodec():
     therefore drags in win.cpp and d3d11. Patch a local checkout to test the
     target instead, and point cargo at it."""
     if not HWCODEC_DIR.exists():
-        BUILD_DIR.mkdir(parents=True, exist_ok=True)
-        run(["git", "clone", HWCODEC_URL, str(HWCODEC_DIR)], cwd=BUILD_DIR)
+        BUILDENV.mkdir(parents=True, exist_ok=True)
+        run(["git", "clone", HWCODEC_URL, str(HWCODEC_DIR)], cwd=HWCODEC_DIR.parent)
         run(["git", "checkout", HWCODEC_REV], cwd=HWCODEC_DIR)
         run(["git", "submodule", "update", "--init", "--recursive"], cwd=HWCODEC_DIR)
 
@@ -653,7 +705,7 @@ def _apply_build_tweaks():
 def _sign(built):
     if not KEYSTORE.exists():
         fail(f"keystore not found: {KEYSTORE}")
-    BUILD_DIR.mkdir(parents=True, exist_ok=True)
+    BUILDENV.mkdir(parents=True, exist_ok=True)
     run([_build_tool("zipalign.exe"), "-p", "-f", "4", built, ALIGNED_APK])
     run([_build_tool("apksigner.bat"), "sign",
          "--ks", KEYSTORE, "--ks-key-alias", KEY_ALIAS,
