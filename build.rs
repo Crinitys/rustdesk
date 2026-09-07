@@ -79,11 +79,17 @@ fn install_android_deps() {
 fn main() {
     hbb_common::gen_version();
     install_android_deps();
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
     #[cfg(all(windows, feature = "inline"))]
     build_manifest();
+    // `cfg(windows)` in a build script describes the host, so cross-compiling
+    // from Windows (e.g. to Android) would otherwise compile the Win32 sources.
     #[cfg(windows)]
-    build_windows();
-    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
+    {
+        if target_os == "windows" {
+            build_windows();
+        }
+    }
     if target_os == "macos" {
         #[cfg(target_os = "macos")]
         build_mac();
