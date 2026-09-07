@@ -166,6 +166,27 @@ def fail(msg):
     raise SystemExit(f"ERROR: {msg}")
 
 
+def check_relocation():
+    """Drop the caches that bake in absolute paths when this directory has moved.
+
+    Gradle's transform cache and Flutter's local.properties both record where the
+    build env was, and a stale entry fails in ways that do not name the cause.
+    Everything else here is relocatable, and cargo simply rebuilds.
+    """
+    stamp = BUILDENV / ".buildenv-path"
+    current = str(BUILDENV.resolve())
+    previous = stamp.read_text(encoding="utf-8").strip() if stamp.exists() else None
+    if previous == current:
+        return
+    if previous is not None:
+        log(f"build env moved from {previous}")
+        shutil.rmtree(BUILDENV / "caches/gradle", ignore_errors=True)
+        (FLUTTER_DIR / "android/local.properties").unlink(missing_ok=True)
+        info("cleared the Gradle cache and Flutter's local.properties")
+    BUILDENV.mkdir(parents=True, exist_ok=True)
+    stamp.write_text(current, encoding="utf-8")
+
+
 def msys_path(path):
     """Git's perl is an msys program: it splits PERL5LIB on ':' and resolves
     '/d/...' through the msys drive mounts, so a 'D:\...' value would be cut in
@@ -958,6 +979,8 @@ def main():
     ap.add_argument("--keep-patches", action="store_true",
                     help="do not restore the files the build patched")
     args = ap.parse_args()
+
+    check_relocation()
 
     names = [n for n, _ in PHASES]
     if args.list:
