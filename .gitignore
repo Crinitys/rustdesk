@@ -60,4 +60,4 @@ flutter/web/
 /third_party/libdrmtap/
 /.superpowers/
 
-/build-local/
+# local Android build env lives in ../rustdesk-buildenv, outside the repo
