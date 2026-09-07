@@ -24,6 +24,9 @@ Usage:
     python build_android_local.py --force             # ignore "already done"
     python build_android_local.py --install-apk       # adb install at the end
     python build_android_local.py --keep-patches      # skip the restore
+
+RUSTDESK_TOOLCHAINS points the toolchains at a shared drive; RUSTDESK_BUILDENV
+moves this project's own caches, sources and output.
 """
 
 import argparse
@@ -45,7 +48,12 @@ FLUTTER_DIR = REPO / "flutter"
 # outside the repo, so none of it leaks into the rest of the machine and it can
 # be deleted in one go. Override with RUSTDESK_BUILDENV.
 BUILDENV = Path(os.environ.get("RUSTDESK_BUILDENV", REPO.parent / "rustdesk-buildenv"))
-TOOLCHAINS = BUILDENV / "toolchains"
+# The toolchains are separately addressable so they can live on a shared drive
+# while this project's own state stays next to the checkout. Nothing is symlinked
+# into place: every tool here is found through an environment variable, which
+# leaves the machine's own installations alone and keeps it obvious what a build
+# actually uses.
+TOOLCHAINS = Path(os.environ.get("RUSTDESK_TOOLCHAINS", BUILDENV / "toolchains"))
 DOWNLOADS = BUILDENV / "caches/downloads"
 PERLLIB = BUILDENV / "perllib"
 OUT_DIR = BUILDENV / "out"
