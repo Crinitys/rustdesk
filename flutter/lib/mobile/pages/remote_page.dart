@@ -63,6 +63,8 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   bool _showBar = !isWebDesktop;
   bool _showGestureHelp = false;
   String _value = '';
+  String? _pendingKeyboardValue;
+  bool _flushingKeyboardInput = false;
   Orientation? _currentOrientation;
   final _uniqueKey = UniqueKey();
   Timer? _iosKeyboardWorkaroundTimer;
@@ -327,7 +329,32 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     }
   }
 
+  // Android IMEs emit one `onChanged` per jamo/keystroke while composing, and
+  // each one is sent to the peer as backspace(s) + text. Typing fast floods the
+  // peer's input queue and characters get lost. Keep only the latest text and
+  // flush at most one diff per tick: intermediate composing states collapse, so
+  // far fewer ordered messages reach the peer.
+  // ponytail: fixed pace; expose as a peer option if 30ms is wrong somewhere.
+  static const _kSoftKeyboardInputPace = Duration(milliseconds: 30);
+
   void _handleNonIOSSoftKeyboardInput(String newValue) {
+    _pendingKeyboardValue = newValue;
+    if (_flushingKeyboardInput) return;
+    _flushingKeyboardInput = true;
+    () async {
+      try {
+        while (_pendingKeyboardValue != null &&
+            _pendingKeyboardValue != _value) {
+          _sendSoftKeyboardDiff(_pendingKeyboardValue!);
+          await Future.delayed(_kSoftKeyboardInputPace);
+        }
+      } finally {
+        _flushingKeyboardInput = false;
+      }
+    }();
+  }
+
+  void _sendSoftKeyboardDiff(String newValue) {
     var oldValue = _value;
     _value = newValue;
     if (oldValue.isNotEmpty &&
@@ -438,6 +465,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     gFFI.invokeMethod("enable_soft_keyboard", true);
     // destroy first, so that our _value trick can work
     _value = initText;
+    _pendingKeyboardValue = null;
     _textController.text = _value;
     setState(() => _showEdit = false);
     _timer?.cancel();
