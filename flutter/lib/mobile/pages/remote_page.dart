@@ -63,6 +63,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   bool _showBar = !isWebDesktop;
   bool _showGestureHelp = false;
   String _value = '';
+  bool _wasComposing = false;
   Orientation? _currentOrientation;
   final _uniqueKey = UniqueKey();
   Timer? _iosKeyboardWorkaroundTimer;
@@ -127,6 +128,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
 
     inputModel.keyboardInputAllowed = true;
+    if (!isIOS) _textController.addListener(_flushCommittedComposition);
 
     // Wayland sessions may use clipboard-based text input on the controlled side.
     // Require explicit user confirmation before allowing soft-keyboard and
@@ -327,7 +329,36 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     }
   }
 
+  // Hold a still-composing Hangul/CJK syllable out of the diff, so jamo stages
+  // are not sent as backspace + text; it is sent once the IME commits it.
+  String _withoutNonAsciiComposing(String text) {
+    final composing = _textController.value.composing;
+    if (!composing.isValid ||
+        composing.isCollapsed ||
+        composing.end > text.length) {
+      return text;
+    }
+    final composed = text.substring(composing.start, composing.end);
+    if (composed.runes.every((r) => r < 0x80)) {
+      return text;
+    }
+    return text.substring(0, composing.start) + text.substring(composing.end);
+  }
+
+  // Committing a composition may not change the text, so `onChanged` is not
+  // called for it.
+  void _flushCommittedComposition() {
+    final composing = _textController.value.composing;
+    final isComposing = composing.isValid && !composing.isCollapsed;
+    final ended = _wasComposing && !isComposing;
+    _wasComposing = isComposing;
+    if (ended) {
+      handleSoftKeyboardInput(_textController.text);
+    }
+  }
+
   void _handleNonIOSSoftKeyboardInput(String newValue) {
+    newValue = _withoutNonAsciiComposing(newValue);
     var oldValue = _value;
     _value = newValue;
     if (oldValue.isNotEmpty &&
