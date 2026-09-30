@@ -764,5 +764,6 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Sync clipboard between sessions", "Sinchronizuoti iškarpinę tarp seansų"),
         ("sync-clipboard-between-sessions-tip", "Viename nuotoliniame seanse nukopijuotas tekstas ar vaizdai taip pat siunčiami į kitų prijungtų seansų iškarpinę."),
         ("Connection is active in the background", ""),
+        ("Three-finger scroll speed", ""),
     ].iter().cloned().collect();
 }

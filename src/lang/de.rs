@@ -764,5 +764,6 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Sync clipboard between sessions", "Zwischenablage zwischen Sitzungen synchronisieren"),
         ("sync-clipboard-between-sessions-tip", "In einer Remote-Sitzung kopierter Text oder kopierte Bilder werden auch an die Zwischenablage Ihrer anderen verbundenen Sitzungen gesendet."),
         ("Connection is active in the background", ""),
+        ("Three-finger scroll speed", ""),
     ].iter().cloned().collect();
 }

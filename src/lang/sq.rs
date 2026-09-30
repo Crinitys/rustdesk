@@ -764,5 +764,6 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Sync clipboard between sessions", "Sinkronizo clipboard-in midis sesioneve"),
         ("sync-clipboard-between-sessions-tip", "Teksti ose imazhet e kopjuara në një sesion të largët dërgohen edhe në clipboard-in e sesioneve të tjera të lidhura."),
         ("Connection is active in the background", ""),
+        ("Three-finger scroll speed", ""),
     ].iter().cloned().collect();
 }
