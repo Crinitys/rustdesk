@@ -520,12 +520,16 @@ class _RawTouchGestureDetectorRegionState
   get onThreeFingerVerticalDragUpdate => ffi.ffiModel.isPeerAndroid
       ? null
       : (d) {
-          _mouseScrollIntegral += d.delta.dy / 4;
+          final speed = threeFingerScrollSpeed();
+          _mouseScrollIntegral += d.delta.dy / 4 * speed;
+          // Above 1x, one wheel step per touch update caps the speed, so send
+          // every accumulated step.
+          final steps = speed > 1 ? _mouseScrollIntegral.truncate() : 0;
           if (_mouseScrollIntegral > 1) {
-            inputModel.scroll(1);
+            inputModel.scroll(steps > 1 ? steps : 1);
             _mouseScrollIntegral = 0;
           } else if (_mouseScrollIntegral < -1) {
-            inputModel.scroll(-1);
+            inputModel.scroll(steps < -1 ? steps : -1);
             _mouseScrollIntegral = 0;
           }
         };
@@ -680,4 +684,11 @@ class CameraRawPointerMouseRegion extends StatelessWidget {
       ),
     );
   }
+}
+
+double threeFingerScrollSpeed() {
+  final v = double.tryParse(
+      bind.mainGetLocalOption(key: kOptionThreeFingerScrollSpeed));
+  if (v == null || v <= 0) return 1.0;
+  return v > 10 ? 10 : v;
 }

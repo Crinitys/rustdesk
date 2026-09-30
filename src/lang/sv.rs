@@ -764,5 +764,6 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Sync clipboard between sessions", "Synkronisera urklipp mellan sessioner"),
         ("sync-clipboard-between-sessions-tip", "Text eller bilder som kopieras i en fjärrsession skickas även till urklipp i dina andra anslutna sessioner."),
         ("Connection is active in the background", ""),
+        ("Three-finger scroll speed", ""),
     ].iter().cloned().collect();
 }
