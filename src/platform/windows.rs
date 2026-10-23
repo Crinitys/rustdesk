@@ -2632,6 +2632,33 @@ pub fn get_process_executable_path(process_id: DWORD) -> ResultType<PathBuf> {
     }
 }
 
+#[cfg(windows)]
+pub fn is_vm_console_foreground() -> bool {
+    let mut process_id: DWORD = 0;
+    unsafe {
+        if GetWindowThreadProcessId(GetForegroundWindow(), &mut process_id) == 0 {
+            return false;
+        }
+    }
+    if process_id == 0 {
+        return false;
+    }
+    let Ok(path) = get_process_executable_path(process_id) else {
+        return false;
+    };
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    [
+        "vmware.exe",
+        "vmplayer.exe",
+        "vmconnect.exe",
+        "virtualboxvm.exe",
+    ]
+    .iter()
+    .any(|candidate| name.eq_ignore_ascii_case(candidate))
+}
+
 pub fn is_foreground_window_elevated() -> ResultType<bool> {
     unsafe {
         let mut process_id: DWORD = 0;

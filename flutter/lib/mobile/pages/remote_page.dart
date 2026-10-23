@@ -985,10 +985,24 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
   var _more = true;
   var _fn = false;
   var _pin = false;
+  var _vmKeyboard = false;
   final _keyboardVisibilityController = KeyboardVisibilityController();
   final _key = GlobalKey();
 
   InputModel get inputModel => gFFI.inputModel;
+
+  @override
+  void initState() {
+    super.initState();
+    bind
+        .sessionGetPeerOption(
+            sessionId: gFFI.sessionId, name: 'vm-keyboard-input')
+        .then((value) {
+      if (mounted) {
+        setState(() => _vmKeyboard = value == 'Y');
+      }
+    });
+  }
 
   Widget wrap(String text, void Function() onPressed,
       {bool? active, IconData? icon}) {
@@ -1167,6 +1181,19 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
       wrap(isMac ? 'Cmd+S' : 'Ctrl+S', () {
         sendPrompt(isMac, 'VK_S');
       }),
+      if (isWin)
+        wrap('VM', () {
+          final v = !_vmKeyboard;
+          setState(() => _vmKeyboard = v);
+          bind.sessionPeerOption(
+              sessionId: gFFI.sessionId,
+              name: 'vm-keyboard-input',
+              value: v ? 'Y' : '');
+        }, active: _vmKeyboard),
+      if (isWin)
+        wrap('한/영', () {
+          inputModel.inputKey('VM_HANGUL_TOGGLE');
+        }),
     ];
     final space = size.width > 320 ? 4.0 : 2.0;
     // 500 ms is long enough for this widget to be built!

@@ -58,6 +58,7 @@ mod updater;
 mod ui_cm_interface;
 mod ui_interface;
 mod ui_session_interface;
+pub mod vm_keyboard;
 
 mod hbbs_http;
 

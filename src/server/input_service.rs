@@ -2018,9 +2018,75 @@ fn release_shift_for_char_input(en: &mut Enigo) {
     }
 }
 
+#[cfg(windows)]
+lazy_static::lazy_static! {
+    static ref VM_KEYBOARD: std::sync::Mutex<crate::vm_keyboard::VmKeyboard> = Default::default();
+}
+
+#[cfg(windows)]
+fn vm_keyboard_input(evt: &KeyEvent) -> bool {
+    if has_hotkey_modifiers(evt) {
+        return false;
+    }
+    if !crate::platform::windows::is_vm_console_foreground() {
+        VM_KEYBOARD.lock().unwrap().reset_composition();
+        return false;
+    }
+    match evt.union {
+        Some(key_event::Union::Chr(c)) | Some(key_event::Union::Unicode(c)) => {
+            if !evt.down {
+                return false;
+            }
+            let Some(c) = char::from_u32(c) else {
+                return false;
+            };
+            let events = VM_KEYBOARD.lock().unwrap().encode_char(c);
+            if let Some(events) = events {
+                for ev in events {
+                    sim_rdev_rawkey_position(ev.scancode as _, ev.down);
+                }
+                true
+            } else {
+                false
+            }
+        }
+        Some(key_event::Union::Seq(ref s)) => {
+            for c in s.chars() {
+                let events = VM_KEYBOARD.lock().unwrap().encode_char(c);
+                if let Some(events) = events {
+                    for ev in events {
+                        sim_rdev_rawkey_position(ev.scancode as _, ev.down);
+                    }
+                } else {
+                    ENIGO.lock().unwrap().key_sequence(&c.to_string());
+                }
+            }
+            true
+        }
+        Some(key_event::Union::ControlKey(ck)) if ck.value() == ControlKey::Backspace.value() => {
+            if evt.down {
+                let events = VM_KEYBOARD.lock().unwrap().backspace();
+                for ev in events {
+                    sim_rdev_rawkey_position(ev.scancode as _, ev.down);
+                }
+            }
+            true
+        }
+        Some(key_event::Union::ControlKey(_)) => {
+            VM_KEYBOARD.lock().unwrap().reset_composition();
+            false
+        }
+        _ => false,
+    }
+}
+
 fn legacy_keyboard_mode(evt: &KeyEvent) {
     #[cfg(windows)]
     crate::platform::windows::try_change_desktop();
+    #[cfg(windows)]
+    if vm_keyboard_input(evt) {
+        return;
+    }
     let mut to_release: Vec<Key> = Vec::new();
 
     let mut en = ENIGO.lock().unwrap();
