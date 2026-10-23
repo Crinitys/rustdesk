@@ -10,20 +10,7 @@ on:
         options:
           - all
           - android
-  pull_request:
-    paths-ignore:
-    - "docs/**"
-    - "README.md"
-  push:
-    branches:
-      - master
-    paths-ignore:
-      - ".github/**"
-      - "docs/**"
-      - "README.md"
-      - "res/**"
-      - "appimage/**"
-      - "flatpak/**"
+          - windows
 
 jobs:
   run-ci:

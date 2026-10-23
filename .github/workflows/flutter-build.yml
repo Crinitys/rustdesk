@@ -59,7 +59,7 @@ env:
 
 jobs:
   generate-sbom:
-    if: inputs.platform != 'android'
+    if: inputs.platform != 'android' && inputs.platform != 'windows'
     runs-on: ubuntu-latest
 
     permissions:
@@ -354,7 +354,7 @@ jobs:
           path: "./rustdesk"
 
       - name: Upload unsigned
-        if: env.UPLOAD_ARTIFACT == 'true'
+        if: env.UPLOAD_ARTIFACT == 'true' || inputs.platform == 'windows'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rustdesk-unsigned-windows-${{ matrix.job.arch }}
@@ -465,7 +465,7 @@ jobs:
   build-for-windows-sciter:
     name: ${{ matrix.job.target }} (${{ matrix.job.os }})
     runs-on: ${{ matrix.job.os }}
-    if: inputs.platform != 'android'
+    if: false
     # Temporarily disable this action due to additional test is needed.
     # if: false
     strategy:
@@ -737,7 +737,7 @@ jobs:
 
 
   build-for-macOS:
-    if: inputs.platform != 'android'
+    if: inputs.platform != 'android' && inputs.platform != 'windows'
     name: ${{ matrix.job.target }}
     runs-on: ${{ matrix.job.os }}
     needs: [generate-bridge]
@@ -1019,6 +1019,7 @@ jobs:
           files: rustdesk-${{ env.VERSION }}-unsigned.tar.gz
 
   build-rustdesk-android:
+    if: inputs.platform != 'windows'
     needs: [generate-bridge]
     name: build rustdesk android apk ${{ matrix.job.target }}
     runs-on: ${{ matrix.job.os }}
@@ -1497,7 +1498,7 @@ jobs:
             signed-apk/rustdesk-${{ env.VERSION }}-universal${{ env.suffix }}.apk
 
   build-rustdesk-linux:
-    if: inputs.platform != 'android'
+    if: inputs.platform != 'android' && inputs.platform != 'windows'
     needs: [generate-bridge]
     name: build rustdesk linux ${{ matrix.job.target }}
     runs-on: ${{ matrix.job.on }}
@@ -1847,7 +1848,7 @@ jobs:
   # old for it. A separate job rather than a matrix entry of build-rustdesk-linux: appimage and
   # flatpak need that job, and a failure here must not skip them.
   build-rustdesk-linux-drm:
-    if: inputs.platform != 'android'
+    if: inputs.platform != 'android' && inputs.platform != 'windows'
     needs: [generate-bridge]
     name: build rustdesk linux drm x86_64
     runs-on: ubuntu-22.04
