@@ -1,5 +1,6 @@
 package com.carriez.flutter_hbb
 
+import android.app.Activity
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -11,11 +12,16 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.Color
+import android.net.Uri
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.provider.Settings
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import io.flutter.plugin.common.MethodCall
+import io.flutter.plugin.common.MethodChannel
 
 const val CLIENT_KEEP_ALIVE_NOTIFY_ID = 1000
 const val CLIENT_KEEP_ALIVE_CHANNEL_ID = "RustDeskClientKeepAlive"
@@ -118,6 +124,54 @@ class ClientKeepAliveService : Service() {
             )
         } else {
             startForeground(CLIENT_KEEP_ALIVE_NOTIFY_ID, notification)
+        }
+    }
+
+    companion object {
+        // Same tag MainActivity used for these calls before they moved here.
+        private const val logTag = "mMainActivity"
+
+        /**
+         * Handles the client keep-alive methods of the flutter method channel.
+         * Returns true when [call] was one of them, false otherwise.
+         */
+        fun onMethodCall(
+            activity: Activity,
+            call: MethodCall,
+            result: MethodChannel.Result
+        ): Boolean {
+            when (call.method) {
+                "start_client_keep_alive" -> {
+                    Intent(activity, ClientKeepAliveService::class.java).also {
+                        ContextCompat.startForegroundService(activity, it)
+                    }
+                    result.success(true)
+                }
+                "stop_client_keep_alive" -> {
+                    activity.stopService(Intent(activity, ClientKeepAliveService::class.java))
+                    result.success(true)
+                }
+                "request_ignore_battery_optimizations" -> {
+                    val powerManager =
+                        activity.getSystemService(Context.POWER_SERVICE) as PowerManager
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
+                        !powerManager.isIgnoringBatteryOptimizations(activity.packageName)
+                    ) {
+                        try {
+                            val intent = Intent(
+                                Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                                Uri.parse("package:${activity.packageName}")
+                            )
+                            activity.startActivity(intent)
+                        } catch (e: Exception) {
+                            Log.e(logTag, "Failed to request battery optimization exemption", e)
+                        }
+                    }
+                    result.success(true)
+                }
+                else -> return false
+            }
+            return true
         }
     }
 }

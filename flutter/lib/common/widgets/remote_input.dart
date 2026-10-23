@@ -7,6 +7,7 @@ import 'package:flutter/gestures.dart';
 
 import 'package:flutter_hbb/models/platform_model.dart';
 import 'package:flutter_hbb/common.dart';
+import 'package:flutter_hbb/common/widgets/three_finger_scroll.dart';
 import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/models/model.dart';
 import 'package:flutter_hbb/models/input_model.dart';
@@ -684,11 +685,4 @@ class CameraRawPointerMouseRegion extends StatelessWidget {
       ),
     );
   }
-}
-
-double threeFingerScrollSpeed() {
-  final v = double.tryParse(
-      bind.mainGetLocalOption(key: kOptionThreeFingerScrollSpeed));
-  if (v == null || v <= 0) return 1.0;
-  return v > 10 ? 10 : v;
 }

@@ -19,6 +19,7 @@ mod eu;
 mod fa;
 mod gu;
 mod fr;
+mod fork;
 mod he;
 mod hi;
 mod hr;
@@ -279,6 +280,11 @@ pub fn translate_locale(name: String, locale: &str) -> String {
         }
         s
     };
+    if let Some(v) = fork::get(lang.as_str(), &name) {
+        if !v.is_empty() {
+            return replace(&v);
+        }
+    }
     if let Some(v) = m.get(&name as &str) {
         if !v.is_empty() {
             return replace(v);

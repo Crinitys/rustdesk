@@ -190,7 +190,6 @@ const String kOptionAllowMonitorSwitchMainToolbar = "allow-monitor-switch-main-t
 const String kOptionAllowMonitorSwitchMinToolbar = "allow-monitor-switch-min-toolbar";
 const String kOptionEnableShowTerminalExtraKeys = "enable-show-terminal-extra-keys";
 const String kOptionShowTerminalCtrlKeys = "show-terminal-extra-ctrl-keys";
-const String kOptionThreeFingerScrollSpeed = "three-finger-scroll-speed";
 
 // network options
 const String kOptionAllowWebSocket = "allow-websocket";
@@ -228,8 +227,6 @@ const String kOptionKeepScreenOn = "keep-screen-on";
 
 const String kOptionKeepAwakeDuringIncomingSessions = "keep-awake-during-incoming-sessions";
 const String kOptionKeepAwakeDuringOutgoingSessions = "keep-awake-during-outgoing-sessions";
-const String kOptionAndroidKeepAliveBatteryPromptShown =
-    "android-keep-alive-battery-prompt-shown";
 
 const String kOptionShowMobileAction = "showMobileActions";
 
