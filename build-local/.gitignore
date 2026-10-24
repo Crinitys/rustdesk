@@ -2,6 +2,5 @@
 # here. Only the files that describe the build are tracked.
 *
 !.gitignore
-!README.md
 !use_tool.json
 !*.py

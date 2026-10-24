@@ -60,3 +60,6 @@ flutter/web/
 /third_party/libdrmtap/
 /.superpowers/
 
+/docs/ANDROID-FORK-CHANGES.md
+/docs/sessions/
+/docs/superpowers/
